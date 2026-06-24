@@ -90,16 +90,30 @@ function parseDateFromText(text: string): { date: Date; match: string } | null {
   return null
 }
 
+const SPANISH_NUMBERS: Record<string, string> = {
+  uno: '1', una: '1', dos: '2', tres: '3', cuatro: '4', cinco: '5',
+  seis: '6', siete: '7', ocho: '8', nueve: '9', diez: '10',
+  once: '11', doce: '12', trece: '13', catorce: '14', quince: '15',
+  dieciseis: '16', diecisiete: '17', dieciocho: '18', diecinueve: '19', veinte: '20',
+  veintiuno: '21', veintidos: '22', veintitres: '23', veinticuatro: '24', veinticinco: '25',
+  treinta: '30', cuarenta: '40', cincuenta: '50', sesenta: '60', setenta: '70',
+  ochenta: '80', noventa: '90', cien: '100',
+}
+
 function parseAxisFromText(text: string): { value: string; match: string } | null {
-  // "eje 3", "eje número 3", "eje 10"
-  const match = text.match(/eje\s+(?:n[uú]mero\s+)?(\d+)/i)
-  if (match) return { value: match[1], match: match[0] }
+  // "eje 3", "eje número 3", "eje tres"
+  const match = text.match(/eje\s+(?:n[uú]mero\s+)?(\d+|[a-záéíóúñ]+)/i)
+  if (match) {
+    const raw = match[1].toLowerCase().trim()
+    const numeric = SPANISH_NUMBERS[raw] || ( /^\d+$/.test(raw) ? raw : null)
+    if (numeric) return { value: numeric, match: match[0] }
+  }
   return null
 }
 
 function parseAddressFromText(text: string): { value: string; match: string } | null {
   // "direccion santa rosa de cua", "dirección av. bolívar"
-  const match = text.match(/direccion\s+(.+)/i)
+  const match = text.match(/direcci[oó]n\s+(.+)/i)
   if (match && match[1].trim().length > 0) {
     return { value: match[1].trim(), match: match[0] }
   }
@@ -243,47 +257,23 @@ export default function Home() {
 
   useEffect(() => { fetchNotes() }, [fetchNotes])
 
-  // ─── Auto-detect fields from transcript ───
-  useEffect(() => {
-    if (!transcript.trim()) return
-    let cleaned = transcript
-
-    // Detect date
+  // ─── Helper: strip detected patterns from a text chunk ───
+  const stripPatterns = useCallback((text: string): string => {
+    let cleaned = text
     if (!detectedDate.current) {
-      const dateResult = parseDateFromText(cleaned)
-      if (dateResult) {
-        setNoteDate(dateToInputValue(dateResult.date))
-        detectedDate.current = true
-        cleaned = cleaned.replace(dateResult.match, '').trim()
-      }
+      const dr = parseDateFromText(cleaned)
+      if (dr) { setNoteDate(dateToInputValue(dr.date)); detectedDate.current = true; cleaned = cleaned.replace(dr.match, ' ') }
     }
-
-    // Detect axis
     if (!detectedAxis.current) {
-      const axisResult = parseAxisFromText(cleaned)
-      if (axisResult) {
-        setNoteAxis(axisResult.value)
-        detectedAxis.current = true
-        cleaned = cleaned.replace(axisResult.match, '').trim()
-      }
+      const ar = parseAxisFromText(cleaned)
+      if (ar) { setNoteAxis(ar.value); detectedAxis.current = true; cleaned = cleaned.replace(ar.match, ' ') }
     }
-
-    // Detect address
     if (!detectedAddress.current) {
-      const addrResult = parseAddressFromText(cleaned)
-      if (addrResult) {
-        setNoteAddress(addrResult.value)
-        detectedAddress.current = true
-        cleaned = cleaned.replace(addrResult.match, '').trim()
-      }
+      const adr = parseAddressFromText(cleaned)
+      if (adr) { setNoteAddress(adr.value); detectedAddress.current = true; cleaned = cleaned.replace(adr.match, ' ') }
     }
-
-    // Clean up multiple spaces
-    cleaned = cleaned.replace(/\s{2,}/g, ' ').trim()
-    if (cleaned !== transcript) {
-      setTranscript(cleaned)
-    }
-  }, [transcript])
+    return cleaned.replace(/\s{2,}/g, ' ').trim()
+  }, [])
 
   // ─── Speech recognition ───
   const startRecognition = useCallback(() => {
@@ -297,19 +287,24 @@ export default function Home() {
     recognition.continuous = true
     recognition.interimResults = true
 
-    let finalTranscript = transcript
+    // Use a ref to keep the accumulated clean transcript in sync
+    const baseRef = { current: transcript }
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i]
         if (result.isFinal) {
-          finalTranscript += result[0].transcript + ' '
+          const raw = result[0].transcript + ' '
+          const cleaned = stripPatterns(raw)
+          if (cleaned.length > 0) {
+            baseRef.current += cleaned
+            setTranscript(baseRef.current)
+          }
         } else {
           interim += result[0].transcript
         }
       }
-      setTranscript(finalTranscript)
       setInterimText(interim)
     }
 
@@ -344,7 +339,7 @@ export default function Home() {
     } catch {
       toast({ title: 'Error', description: 'No se pudo iniciar el reconocimiento de voz.', variant: 'destructive' })
     }
-  }, [transcript, isRecording, recognitionError, toast])
+  }, [transcript, isRecording, recognitionError, toast, stripPatterns])
 
   const stopRecognition = useCallback(() => {
     if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null }
