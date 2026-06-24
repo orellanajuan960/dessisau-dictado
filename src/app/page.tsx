@@ -577,6 +577,54 @@ export default function Home() {
         </Card>
       )}
 
+      {/* Text area with clear button */}
+      <div className="flex-1 min-h-0 relative">
+        <div className="relative h-full">
+          <Textarea
+            ref={textareaRef}
+            value={displayText}
+            onChange={(e) => { if (!isRecording) { const v = e.target.value; transcriptRef.current = v; setTranscript(v) } }}
+            placeholder={isRecording ? 'Escuchando... Habla ahora' : 'Presiona el micrófono para empezar a dictar...'}
+            className="w-full h-full min-h-[180px] md:min-h-[300px] resize-none text-base leading-relaxed pr-10"
+            readOnly={isRecording}
+          />
+          {transcript.length > 0 && !isRecording && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-2 right-2 h-8 w-8 text-muted-foreground hover:text-destructive"
+              onClick={clearText}
+              title="Limpiar texto"
+            >
+              <Eraser className="h-4 w-4" />
+            </Button>
+          )}
+          {interimText && isRecording && (
+            <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+              Reconociendo...
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center justify-between gap-2 pt-1 pb-safe">
+        <div className="flex items-center gap-0.5">
+          <Button variant="ghost" size="sm" onClick={() => setShowTitleInput(!showTitleInput)} className="text-xs text-muted-foreground h-8 px-2">
+            {showTitleInput ? 'Ocultar título' : 'Título'}
+          </Button>
+          <span className="text-muted-foreground/30 mx-0.5">|</span>
+          <Button variant="ghost" size="sm" onClick={() => setShowFields(!showFields)} className="text-xs text-muted-foreground h-8 px-2">
+            {showFields ? 'Ocultar campos' : activeFieldCount > 0 ? `Campos (${activeFieldCount})` : 'Campos'}
+          </Button>
+        </div>
+        <Button onClick={saveNote} disabled={!transcript.trim() || isSaving} className="gap-1.5 h-9 px-4" size="sm">
+          <Save className="h-4 w-4" />
+          {isSaving ? 'Guardando...' : 'Guardar'}
+        </Button>
+      </div>
+
       {/* Title input */}
       {showTitleInput && (
         <Input placeholder="Título (opcional)" value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} className="text-base" autoFocus />
@@ -639,54 +687,6 @@ export default function Home() {
           <span className="text-muted-foreground ml-1">tocar para editar</span>
         </div>
       )}
-
-      {/* Text area with clear button */}
-      <div className="flex-1 min-h-0 relative">
-        <div className="relative h-full">
-          <Textarea
-            ref={textareaRef}
-            value={displayText}
-            onChange={(e) => { if (!isRecording) { const v = e.target.value; transcriptRef.current = v; setTranscript(v) } }}
-            placeholder={isRecording ? 'Escuchando... Habla ahora' : 'Presiona el micrófono para empezar a dictar...'}
-            className="w-full h-full min-h-[180px] md:min-h-[300px] resize-none text-base leading-relaxed pr-10"
-            readOnly={isRecording}
-          />
-          {transcript.length > 0 && !isRecording && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute top-2 right-2 h-8 w-8 text-muted-foreground hover:text-destructive"
-              onClick={clearText}
-              title="Limpiar texto"
-            >
-              <Eraser className="h-4 w-4" />
-            </Button>
-          )}
-          {interimText && isRecording && (
-            <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              Reconociendo...
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Action buttons */}
-      <div className="flex items-center justify-between gap-2 pt-1 pb-safe">
-        <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="sm" onClick={() => setShowTitleInput(!showTitleInput)} className="text-xs text-muted-foreground h-8 px-2">
-            {showTitleInput ? 'Ocultar título' : 'Título'}
-          </Button>
-          <span className="text-muted-foreground/30 mx-0.5">|</span>
-          <Button variant="ghost" size="sm" onClick={() => setShowFields(!showFields)} className="text-xs text-muted-foreground h-8 px-2">
-            {showFields ? 'Ocultar campos' : activeFieldCount > 0 ? `Campos (${activeFieldCount})` : 'Campos'}
-          </Button>
-        </div>
-        <Button onClick={saveNote} disabled={!transcript.trim() || isSaving} className="gap-1.5 h-9 px-4" size="sm">
-          <Save className="h-4 w-4" />
-          {isSaving ? 'Guardando...' : 'Guardar'}
-        </Button>
-      </div>
 
       {/* Voice commands help */}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground/60 px-1">
