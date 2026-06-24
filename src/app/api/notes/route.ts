@@ -16,7 +16,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { content, title, noteDate } = body
+    const { content, title, noteDate, axis, address } = body
 
     if (!content || content.trim().length === 0) {
       return NextResponse.json({ error: 'El contenido es obligatorio' }, { status: 400 })
@@ -27,6 +27,8 @@ export async function POST(request: NextRequest) {
         content: content.trim(),
         title: title?.trim() || null,
         noteDate: noteDate ? new Date(noteDate) : null,
+        axis: axis?.trim() || null,
+        address: address?.trim() || null,
       },
     })
 
