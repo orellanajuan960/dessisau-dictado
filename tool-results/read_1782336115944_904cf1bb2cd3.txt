@@ -1,0 +1,781 @@
+     1→     1→'use client'
+     2→     2→
+     3→     3→import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+     4→     4→import { Button } from '@/components/ui/button'
+     5→     5→import { Textarea } from '@/components/ui/textarea'
+     6→     6→import { Card, CardContent } from '@/components/ui/card'
+     7→     7→import { Input } from '@/components/ui/input'
+     8→     8→import { Badge } from '@/components/ui/badge'
+     9→     9→import { ScrollArea } from '@/components/ui/scroll-area'
+    10→    10→import { Separator } from '@/components/ui/separator'
+    11→    11→import {
+    12→    12→  AlertDialog,
+    13→    13→  AlertDialogAction,
+    14→    14→  AlertDialogCancel,
+    15→    15→  AlertDialogContent,
+    16→    16→  AlertDialogDescription,
+    17→    17→  AlertDialogFooter,
+    18→    18→  AlertDialogHeader,
+    19→    19→  AlertDialogTitle,
+    20→    20→} from '@/components/ui/alert-dialog'
+    21→    21→import { useToast } from '@/hooks/use-toast'
+    22→    22→import {
+    23→    23→  Mic, MicOff, Save, Trash2, FileText, ArrowLeft, Plus,
+    24→    24→  Clock, CalendarDays, X, MapPin, GitBranch, Download,
+    25→    25→} from 'lucide-react'
+    26→    26→
+    27→    27→type SpeechRecognitionInstance = any
+    28→    28→
+    29→    29→interface Note {
+    30→    30→  id: string
+    31→    31→  title: string | null
+    32→    32→  content: string
+    33→    33→  noteDate: string | null
+    34→    34→  axis: string | null
+    35→    35→  address: string | null
+    36→    36→  createdAt: string
+    37→    37→  updatedAt: string
+    38→    38→}
+    39→    39→
+    40→    40→type View = 'dictation' | 'list' | 'detail'
+    41→    41→
+    42→    42→// ─────────────────────────────────────────────
+    43→    43→// PARSERS: extraen datos del texto dictado
+    44→    44→// ─────────────────────────────────────────────
+    45→    45→
+    46→    46→const MONTH_NAMES: Record<string, number> = {
+    47→    47→  enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+    48→    48→  julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+    49→    49→}
+    50→    50→
+    51→    51→function parseDateFromText(text: string): { date: Date; match: string } | null {
+    52→    52→  const patterns: { re: RegExp; extractor: (m: RegExpMatchArray) => Date | null }[] = [
+    53→    53→    // "fecha 24 de junio del 2026" or "24 de junio del 2026"
+    54→    54→    {
+    55→    55→      re: /(?:fecha\s+)?(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+(?:del?\s+)?(\d{2,4})/i,
+    56→    56→      extractor: (m) => {
+    57→    57→        const day = parseInt(m[1], 10)
+    58→    58→        const month = MONTH_NAMES[m[2].toLowerCase()]
+    59→    59→        let year = parseInt(m[3], 10)
+    60→    60→        if (year < 100) year += 2000
+    61→    61→        if (month === undefined) return null
+    62→    62→        const d = new Date(year, month, day)
+    63→    63→        return isNaN(d.getTime()) ? null : d
+    64→    64→      },
+    65→    65→    },
+    66→    66→    // "20 06 2026" or "20/06/2026" or "20-06-2026"
+    67→    67→    {
+    68→    68→      re: /(\d{1,2})[\s./\-]+(\d{1,2})[\s./\-]+(\d{2,4})/,
+    69→    69→      extractor: (m) => {
+    70→    70→        const a = parseInt(m[1], 10)
+    71→    71→        const b = parseInt(m[2], 10)
+    72→    72→        let c = parseInt(m[3], 10)
+    73→    73→        if (c < 100) c += 2000
+    74→    74→        const d1 = new Date(c, b - 1, a)
+    75→    75→        const d2 = new Date(c, a - 1, b)
+    76→    76→        if (!isNaN(d1.getTime()) && d1.getDate() === a && d1.getMonth() === b - 1) return d1
+    77→    77→        if (!isNaN(d2.getTime()) && d2.getDate() === b && d2.getMonth() === a - 1) return d2
+    78→    78→        return null
+    79→    79→      },
+    80→    80→    },
+    81→    81→  ]
+    82→    82→
+    83→    83→  for (const { re, extractor } of patterns) {
+    84→    84→    const match = text.match(re)
+    85→    85→    if (match) {
+    86→    86→      const date = extractor(match)
+    87→    87→      if (date) return { date, match: match[0] }
+    88→    88→    }
+    89→    89→  }
+    90→    90→  return null
+    91→    91→}
+    92→    92→
+    93→    93→const SPANISH_NUMBERS: Record<string, string> = {
+    94→    94→  uno: '1', una: '1', dos: '2', tres: '3', cuatro: '4', cinco: '5',
+    95→    95→  seis: '6', siete: '7', ocho: '8', nueve: '9', diez: '10',
+    96→    96→  once: '11', doce: '12', trece: '13', catorce: '14', quince: '15',
+    97→    97→  dieciseis: '16', diecisiete: '17', dieciocho: '18', diecinueve: '19', veinte: '20',
+    98→    98→  veintiuno: '21', veintidos: '22', veintitres: '23', veinticuatro: '24', veinticinco: '25',
+    99→    99→  treinta: '30', cuarenta: '40', cincuenta: '50', sesenta: '60', setenta: '70',
+   100→   100→  ochenta: '80', noventa: '90', cien: '100',
+   101→   101→}
+   102→   102→
+   103→   103→function parseAxisFromText(text: string): { value: string; match: string } | null {
+   104→   104→  // "eje 3", "eje número 3", "eje tres"
+   105→   105→  const match = text.match(/eje\s+(?:n[uú]mero\s+)?(\d+|[a-záéíóúñ]+)/i)
+   106→   106→  if (match) {
+   107→   107→    const raw = match[1].toLowerCase().trim()
+   108→   108→    const numeric = SPANISH_NUMBERS[raw] || ( /^\d+$/.test(raw) ? raw : null)
+   109→   109→    if (numeric) return { value: numeric, match: match[0] }
+   110→   110→  }
+   111→   111→  return null
+   112→   112→}
+   113→   113→
+   114→   114→function parseAddressFromText(text: string): { value: string; match: string } | null {
+   115→   115→  // "direccion santa rosa de cua", "dirección av. bolívar"
+   116→   116→  const match = text.match(/direcci[oó]n\s+(.+)/i)
+   117→   117→  if (match && match[1].trim().length > 0) {
+   118→   118→    return { value: match[1].trim(), match: match[0] }
+   119→   119→  }
+   120→   120→  return null
+   121→   121→}
+   122→   122→
+   123→   123→function dateToInputValue(d: Date): string {
+   124→   124→  const yyyy = d.getFullYear()
+   125→   125→  const mm = String(d.getMonth() + 1).padStart(2, '0')
+   126→   126→  const dd = String(d.getDate()).padStart(2, '0')
+   127→   127→  return `${yyyy}-${mm}-${dd}`
+   128→   128→}
+   129→   129→
+   130→   130→// ─────────────────────────────────────────────
+   131→   131→// EXPORT: genera Word/PDF con tabla de notas
+   132→   132→// ─────────────────────────────────────────────
+   133→   133→
+   134→   134→function exportNotes(notes: Note[]) {
+   135→   135→  const sorted = [...notes].sort((a, b) => {
+   136→   136→    if (a.noteDate && b.noteDate) return new Date(a.noteDate).getTime() - new Date(b.noteDate).getTime()
+   137→   137→    if (a.noteDate) return -1
+   138→   138→    if (b.noteDate) return 1
+   139→   139→    return 0
+   140→   140→  })
+   141→   141→
+   142→   142→  const fmtDate = (d: string) => {
+   143→   143→    const date = new Date(d)
+   144→   144→    return date.toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+   145→   145→  }
+   146→   146→
+   147→   147→  const rows = sorted.map((n) => `
+   148→   148→    <tr>
+   149→   149→      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.noteDate ? fmtDate(n.noteDate) : '-'}</td>
+   150→   150→      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;text-align:center;">${n.axis || '-'}</td>
+   151→   151→      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.address || '-'}</td>
+   152→   152→      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.content.replace(/\n/g, '<br>')}</td>
+   153→   153→    </tr>
+   154→   154→  `).join('')
+   155→   155→
+   156→   156→  const html = `
+   157→   157→<html xmlns:o="urn:schemas-microsoft-com:office:office"
+   158→   158→      xmlns:w="urn:schemas-microsoft-com:office:word"
+   159→   159→      xmlns="http://www.w3.org/TR/REC-html40">
+   160→   160→<head>
+   161→   161→  <meta charset="utf-8">
+   162→   162→  <style>
+   163→   163→    body { font-family: Arial, sans-serif; margin: 20px; }
+   164→   164→    h2 { text-align: center; margin-bottom: 16px; }
+   165→   165→    table { border-collapse: collapse; width: 100%; }
+   166→   166→    th { background-color: #222; color: #fff; border: 1px solid #333; padding: 8px; font-size: 13px; }
+   167→   167→  </style>
+   168→   168→</head>
+   169→   169→<body>
+   170→   170→  <h2>Notas Dictadas</h2>
+   171→   171→  <p style="text-align:center;color:#666;font-size:12px;margin-bottom:16px;">
+   172→   172→    Generado el ${new Date().toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' })} &mdash; ${sorted.length} nota(s)
+   173→   173→  </p>
+   174→   174→  <table>
+   175→   175→    <thead>
+   176→   176→      <tr>
+   177→   177→        <th style="width:100px;">Fecha</th>
+   178→   178→        <th style="width:60px;">Eje</th>
+   179→   179→        <th style="width:180px;">Dirección</th>
+   180→   180→        <th>Contenido</th>
+   181→   181→      </tr>
+   182→   182→    </thead>
+   183→   183→    <tbody>${rows}</tbody>
+   184→   184→  </table>
+   185→   185→</body>
+   186→   186→</html>`
+   187→   187→
+   188→   188→  const blob = new Blob(['\ufeff' + html], { type: 'application/msword' })
+   189→   189→  const url = URL.createObjectURL(blob)
+   190→   190→  const a = document.createElement('a')
+   191→   191→  a.href = url
+   192→   192→  a.download = `notas_dictadas_${new Date().toISOString().slice(0, 10)}.doc`
+   193→   193→  document.body.appendChild(a)
+   194→   194→  a.click()
+   195→   195→  document.body.removeChild(a)
+   196→   196→  URL.revokeObjectURL(url)
+   197→   197→}
+   198→   198→
+   199→   199→// ─────────────────────────────────────────────
+   200→   200→// COMPONENT
+   201→   201→// ─────────────────────────────────────────────
+   202→   202→
+   203→   203→export default function Home() {
+   204→   204→  // Dictation state
+   205→   205→  const [isRecording, setIsRecording] = useState(false)
+   206→   206→  const [transcript, setTranscript] = useState('')
+   207→   207→  const [interimText, setInterimText] = useState('')
+   208→   208→  const [recognitionError, setRecognitionError] = useState('')
+   209→   209→  const [isSupported, setIsSupported] = useState(true)
+   210→   210→
+   211→   211→  // Note fields
+   212→   212→  const [noteTitle, setNoteTitle] = useState('')
+   213→   213→  const [noteDate, setNoteDate] = useState('')
+   214→   214→  const [noteAxis, setNoteAxis] = useState('')
+   215→   215→  const [noteAddress, setNoteAddress] = useState('')
+   216→   216→
+   217→   217→  // UI toggles
+   218→   218→  const [showTitleInput, setShowTitleInput] = useState(false)
+   219→   219→  const [showFields, setShowFields] = useState(false)
+   220→   220→
+   221→   221→  // Detection flags (prevent re-detection)
+   222→   222→  const detectedDate = useRef(false)
+   223→   223→  const detectedAxis = useRef(false)
+   224→   224→  const detectedAddress = useRef(false)
+   225→   225→
+   226→   226→  // Views & data
+   227→   227→  const [notes, setNotes] = useState<Note[]>([])
+   228→   228→  const [currentView, setCurrentView] = useState<View>('dictation')
+   229→   229→  const [selectedNote, setSelectedNote] = useState<Note | null>(null)
+   230→   230→  const [isSaving, setIsSaving] = useState(false)
+   231→   231→  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+   232→   232→
+   233→   233→  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
+   234→   234→  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+   235→   235→  const textareaRef = useRef<HTMLTextAreaElement>(null)
+   236→   236→  const { toast } = useToast()
+   237→   237→
+   238→   238→  // ─── Browser support ───
+   239→   239→  useEffect(() => {
+   240→   240→    const SR =
+   241→   241→      typeof window !== 'undefined'
+   242→   242→        ? (window as unknown as Record<string, unknown>).SpeechRecognition ||
+   243→   243→          (window as unknown as Record<string, unknown>).webkitSpeechRecognition
+   244→   244→        : null
+   245→   245→    if (!SR) setIsSupported(false)
+   246→   246→  }, [])
+   247→   247→
+   248→   248→  // ─── Fetch notes ───
+   249→   249→  const fetchNotes = useCallback(async () => {
+   250→   250→    try {
+   251→   251→      const res = await fetch('/api/notes')
+   252→   252→      if (res.ok) setNotes(await res.json())
+   253→   253→    } catch {
+   254→   254→      toast({ title: 'Error', description: 'No se pudieron cargar las notas.', variant: 'destructive' })
+   255→   255→    }
+   256→   256→  }, [toast])
+   257→   257→
+   258→   258→  useEffect(() => { fetchNotes() }, [fetchNotes])
+   259→   259→
+   260→   260→  // ─── Helper: strip detected patterns from a text chunk ───
+   261→   261→  const stripPatterns = useCallback((text: string): string => {
+   262→   262→    let cleaned = text
+   263→   263→    if (!detectedDate.current) {
+   264→   264→      const dr = parseDateFromText(cleaned)
+   265→   265→      if (dr) { setNoteDate(dateToInputValue(dr.date)); detectedDate.current = true; cleaned = cleaned.replace(dr.match, ' ') }
+   266→   266→    }
+   267→   267→    if (!detectedAxis.current) {
+   268→   268→      const ar = parseAxisFromText(cleaned)
+   269→   269→      if (ar) { setNoteAxis(ar.value); detectedAxis.current = true; cleaned = cleaned.replace(ar.match, ' ') }
+   270→   270→    }
+   271→   271→    if (!detectedAddress.current) {
+   272→   272→      const adr = parseAddressFromText(cleaned)
+   273→   273→      if (adr) { setNoteAddress(adr.value); detectedAddress.current = true; cleaned = cleaned.replace(adr.match, ' ') }
+   274→   274→    }
+   275→   275→    return cleaned.replace(/\s{2,}/g, ' ').trim()
+   276→   276→  }, [])
+   277→   277→
+   278→   278→  // ─── Speech recognition ───
+   279→   279→  const startRecognition = useCallback(() => {
+   280→   280→    const SpeechRecognitionAPI =
+   281→   281→      (window as unknown as Record<string, unknown>).SpeechRecognition ||
+   282→   282→      (window as unknown as Record<string, unknown>).webkitSpeechRecognition
+   283→   283→    if (!SpeechRecognitionAPI) return
+   284→   284→
+   285→   285→    const recognition = new (SpeechRecognitionAPI as new () => SpeechRecognitionInstance)()
+   286→   286→    recognition.lang = 'es-ES'
+   287→   287→    recognition.continuous = true
+   288→   288→    recognition.interimResults = true
+   289→   289→
+   290→   290→    // Use a ref to keep the accumulated clean transcript in sync
+   291→   291→    const baseRef = { current: transcript }
+   292→   292→
+   293→   293→    recognition.onresult = (event: SpeechRecognitionEvent) => {
+   294→   294→      let interim = ''
+   295→   295→      for (let i = event.resultIndex; i < event.results.length; i++) {
+   296→   296→        const result = event.results[i]
+   297→   297→        if (result.isFinal) {
+   298→   298→          const raw = result[0].transcript + ' '
+   299→   299→          const cleaned = stripPatterns(raw)
+   300→   300→          if (cleaned.length > 0) {
+   301→   301→            baseRef.current += cleaned
+   302→   302→            setTranscript(baseRef.current)
+   303→   303→          }
+   304→   304→        } else {
+   305→   305→          interim += result[0].transcript
+   306→   306→        }
+   307→   307→      }
+   308→   308→      setInterimText(interim)
+   309→   309→    }
+   310→   310→
+   311→   311→    recognition.onerror = (event: { error: string }) => {
+   312→   312→      console.error('Speech recognition error:', event.error)
+   313→   313→      if (event.error === 'not-allowed') {
+   314→   314→        setRecognitionError('Permiso de micrófono denegado.')
+   315→   315→        setIsRecording(false)
+   316→   316→      } else if (event.error === 'no-speech' && isRecording) {
+   317→   317→        restartTimeoutRef.current = setTimeout(() => {
+   318→   318→          try { recognition.start() } catch { /* ignore */ }
+   319→   319→        }, 500)
+   320→   320→      } else if (event.error === 'network') {
+   321→   321→        setRecognitionError('Error de red. Verifica tu conexión.')
+   322→   322→        setIsRecording(false)
+   323→   323→      }
+   324→   324→    }
+   325→   325→
+   326→   326→    recognition.onend = () => {
+   327→   327→      if (isRecording && !recognitionError) {
+   328→   328→        restartTimeoutRef.current = setTimeout(() => {
+   329→   329→          try { recognition.start() } catch { /* ignore */ }
+   330→   330→        }, 300)
+   331→   331→      }
+   332→   332→    }
+   333→   333→
+   334→   334→    recognitionRef.current = recognition
+   335→   335→    try {
+   336→   336→      recognition.start()
+   337→   337→      setIsRecording(true)
+   338→   338→      setRecognitionError('')
+   339→   339→    } catch {
+   340→   340→      toast({ title: 'Error', description: 'No se pudo iniciar el reconocimiento de voz.', variant: 'destructive' })
+   341→   341→    }
+   342→   342→  }, [transcript, isRecording, recognitionError, toast, stripPatterns])
+   343→   343→
+   344→   344→  const stopRecognition = useCallback(() => {
+   345→   345→    if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null }
+   346→   346→    if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null }
+   347→   347→    setIsRecording(false)
+   348→   348→    setInterimText('')
+   349→   349→  }, [])
+   350→   350→
+   351→   351→  const toggleRecording = useCallback(() => {
+   352→   352→    if (isRecording) { stopRecognition() } else { startRecognition() }
+   353→   353→  }, [isRecording, startRecognition, stopRecognition])
+   354→   354→
+   355→   355→  useEffect(() => {
+   356→   356→    return () => {
+   357→   357→      if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current)
+   358→   358→      if (recognitionRef.current) recognitionRef.current.stop()
+   359→   359→    }
+   360→   360→  }, [])
+   361→   361→
+   362→   362→  // ─── Save note ───
+   363→   363→  const resetForm = () => {
+   364→   364→    setTranscript('')
+   365→   365→    setNoteTitle('')
+   366→   366→    setNoteDate('')
+   367→   367→    setNoteAxis('')
+   368→   368→    setNoteAddress('')
+   369→   369→    setShowTitleInput(false)
+   370→   370→    setShowFields(false)
+   371→   371→    detectedDate.current = false
+   372→   372→    detectedAxis.current = false
+   373→   373→    detectedAddress.current = false
+   374→   374→  }
+   375→   375→
+   376→   376→  const saveNote = async () => {
+   377→   377→    const trimmed = transcript.trim()
+   378→   378→    if (!trimmed) {
+   379→   379→      toast({ title: 'Nota vacía', description: 'Dicta algo antes de guardar.', variant: 'destructive' })
+   380→   380→      return
+   381→   381→    }
+   382→   382→
+   383→   383→    setIsSaving(true)
+   384→   384→    try {
+   385→   385→      const res = await fetch('/api/notes', {
+   386→   386→        method: 'POST',
+   387→   387→        headers: { 'Content-Type': 'application/json' },
+   388→   388→        body: JSON.stringify({
+   389→   389→          content: trimmed,
+   390→   390→          title: noteTitle.trim() || null,
+   391→   391→          noteDate: noteDate || null,
+   392→   392→          axis: noteAxis.trim() || null,
+   393→   393→          address: noteAddress.trim() || null,
+   394→   394→        }),
+   395→   395→      })
+   396→   396→
+   397→   397→      if (res.ok) {
+   398→   398→        toast({ title: 'Nota guardada', description: 'Tu nota se ha guardado exitosamente.' })
+   399→   399→        resetForm()
+   400→   400→        fetchNotes()
+   401→   401→        setCurrentView('list')
+   402→   402→      } else {
+   403→   403→        const errData = await res.json().catch(() => null)
+   404→   404→        throw new Error(errData?.error || 'Error al guardar')
+   405→   405→      }
+   406→   406→    } catch (err) {
+   407→   407→      toast({
+   408→   408→        title: 'Error al guardar',
+   409→   409→        description: err instanceof Error ? err.message : 'No se pudo guardar la nota.',
+   410→   410→        variant: 'destructive',
+   411→   411→      })
+   412→   412→    } finally {
+   413→   413→      setIsSaving(false)
+   414→   414→    }
+   415→   415→  }
+   416→   416→
+   417→   417→  // ─── Delete note ───
+   418→   418→  const deleteNote = async (id: string) => {
+   419→   419→    try {
+   420→   420→      const res = await fetch(`/api/notes/${id}`, { method: 'DELETE' })
+   421→   421→      if (res.ok) {
+   422→   422→        toast({ title: 'Eliminada', description: 'La nota ha sido eliminada.' })
+   423→   423→        setNotes((prev) => prev.filter((n) => n.id !== id))
+   424→   424→        if (selectedNote?.id === id) { setSelectedNote(null); setCurrentView('list') }
+   425→   425→      }
+   426→   426→    } catch {
+   427→   427→      toast({ title: 'Error', description: 'No se pudo eliminar la nota.', variant: 'destructive' })
+   428→   428→    }
+   429→   429→    setDeleteTarget(null)
+   430→   430→  }
+   431→   431→
+   432→   432→  // ─── Formatters ───
+   433→   433→  const formatDate = (d: string) => new Date(d).toLocaleDateString('es-VE', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+   434→   434→  const formatDateShort = (d: string) => new Date(d).toLocaleDateString('es-VE', { day: 'numeric', month: 'short', year: 'numeric' })
+   435→   435→  const getPreview = (c: string) => c.length > 100 ? c.substring(0, 100) + '...' : c
+   436→   436→
+   437→   437→  const displayText = useMemo(() => {
+   438→   438→    const base = transcript.trim()
+   439→   439→    const interim = interimText.trim()
+   440→   440→    return interim ? base + (base ? ' ' : '') + interim : base
+   441→   441→  }, [transcript, interimText])
+   442→   442→
+   443→   443→  // Count active metadata fields
+   444→   444→  const activeFieldCount = [noteDate, noteAxis, noteAddress].filter(Boolean).length
+   445→   445→
+   446→   446→  // ==================== DICTATION VIEW ====================
+   447→   447→  const renderDictationView = () => (
+   448→   448→    <div className="flex flex-col gap-3 flex-1 min-h-0">
+   449→   449→      {/* Header */}
+   450→   450→      <div className="flex items-center justify-between">
+   451→   451→        <h1 className="text-xl font-bold tracking-tight">Dictado de Voz</h1>
+   452→   452→        <Button variant="ghost" size="sm" onClick={() => { setCurrentView('list'); fetchNotes() }} className="gap-1.5 text-sm">
+   453→   453→          <FileText className="h-4 w-4" />
+   454→   454→          Mis Notas
+   455→   455→          {notes.length > 0 && <Badge variant="secondary" className="ml-1 text-xs">{notes.length}</Badge>}
+   456→   456→        </Button>
+   457→   457→      </div>
+   458→   458→
+   459→   459→      {/* Not supported */}
+   460→   460→      {!isSupported && (
+   461→   461→        <Card className="border-destructive/50 bg-destructive/5">
+   462→   462→          <CardContent className="p-4">
+   463→   463→            <p className="text-sm text-destructive font-medium">Tu navegador no soporta reconocimiento de voz. Usa Chrome o Safari.</p>
+   464→   464→          </CardContent>
+   465→   465→        </Card>
+   466→   466→      )}
+   467→   467→
+   468→   468→      {/* Error */}
+   469→   469→      {recognitionError && (
+   470→   470→        <Card className="border-destructive/50 bg-destructive/5">
+   471→   471→          <CardContent className="p-4 flex items-start justify-between gap-2">
+   472→   472→            <p className="text-sm text-destructive">{recognitionError}</p>
+   473→   473→            <Button variant="ghost" size="sm" onClick={() => setRecognitionError('')} className="shrink-0"><X className="h-4 w-4" /></Button>
+   474→   474→          </CardContent>
+   475→   475→        </Card>
+   476→   476→      )}
+   477→   477→
+   478→   478→      {/* Title input */}
+   479→   479→      {showTitleInput && (
+   480→   480→        <Input placeholder="Título (opcional)" value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} className="text-base" autoFocus />
+   481→   481→      )}
+   482→   482→
+   483→   483→      {/* Metadata fields panel */}
+   484→   484→      {showFields && (
+   485→   485→        <div className="flex flex-col gap-2 p-3 bg-muted/40 rounded-lg border">
+   486→   486→          {/* Date */}
+   487→   487→          <div className="flex items-center gap-2">
+   488→   488→            <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
+   489→   489→            <Input type="date" value={noteDate} onChange={(e) => { setNoteDate(e.target.value); if (e.target.value) detectedDate.current = true }} className="text-sm flex-1" />
+   490→   490→            {noteDate && (
+   491→   491→              <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8" onClick={() => { setNoteDate(''); detectedDate.current = false }}>
+   492→   492→                <X className="h-3.5 w-3.5 text-muted-foreground" />
+   493→   493→              </Button>
+   494→   494→            )}
+   495→   495→          </div>
+   496→   496→          {/* Axis */}
+   497→   497→          <div className="flex items-center gap-2">
+   498→   498→            <GitBranch className="h-4 w-4 text-muted-foreground shrink-0" />
+   499→   499→            <Input placeholder="Eje (ej: 3)" value={noteAxis} onChange={(e) => { setNoteAxis(e.target.value); if (e.target.value) detectedAxis.current = true }} className="text-sm flex-1" />
+   500→   500→            {noteAxis && (
+   501→   501→              <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8" onClick={() => { setNoteAxis(''); detectedAxis.current = false }}>
+   502→   502→                <X className="h-3.5 w-3.5 text-muted-foreground" />
+   503→   503→              </Button>
+   504→   504→            )}
+   505→   505→          </div>
+   506→   506→          {/* Address */}
+   507→   507→          <div className="flex items-center gap-2">
+   508→   508→            <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
+   509→   509→            <Input placeholder="Dirección (ej: Santa Rosa de Cua)" value={noteAddress} onChange={(e) => { setNoteAddress(e.target.value); if (e.target.value) detectedAddress.current = true }} className="text-sm flex-1" />
+   510→   510→            {noteAddress && (
+   511→   511→              <Button variant="ghost" size="icon" className="shrink-0 h-8 w-8" onClick={() => { setNoteAddress(''); detectedAddress.current = false }}>
+   512→   512→                <X className="h-3.5 w-3.5 text-muted-foreground" />
+   513→   513→              </Button>
+   514→   514→            )}
+   515→   515→          </div>
+   516→   516→        </div>
+   517→   517→      )}
+   518→   518→
+   519→   519→      {/* Detected fields banner (when panel is closed) */}
+   520→   520→      {!showFields && activeFieldCount > 0 && (
+   521→   521→        <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-muted/40 rounded-lg text-sm cursor-pointer" onClick={() => setShowFields(true)}>
+   522→   522→          {noteDate && (
+   523→   523→            <span className="flex items-center gap-1 text-primary">
+   524→   524→              <CalendarDays className="h-3.5 w-3.5" />{formatDateShort(noteDate)}
+   525→   525→            </span>
+   526→   526→          )}
+   527→   527→          {noteAxis && (
+   528→   528→            <span className="flex items-center gap-1 text-primary">
+   529→   529→              <GitBranch className="h-3.5 w-3.5" />Eje {noteAxis}
+   530→   530→            </span>
+   531→   531→          )}
+   532→   532→          {noteAddress && (
+   533→   533→            <span className="flex items-center gap-1 text-primary">
+   534→   534→              <MapPin className="h-3.5 w-3.5" />{noteAddress}
+   535→   535→            </span>
+   536→   536→          )}
+   537→   537→          <span className="text-xs text-muted-foreground ml-1">tocar para editar</span>
+   538→   538→        </div>
+   539→   539→      )}
+   540→   540→
+   541→   541→      {/* Text area */}
+   542→   542→      <div className="flex-1 min-h-0 relative">
+   543→   543→        <Textarea
+   544→   544→          ref={textareaRef}
+   545→   545→          value={displayText}
+   546→   546→          onChange={(e) => { if (!isRecording) setTranscript(e.target.value) }}
+   547→   547→          placeholder={isRecording ? 'Escuchando... Habla ahora' : 'Presiona el micrófono para empezar a dictar...'}
+   548→   548→          className="w-full h-full min-h-[200px] md:min-h-[300px] resize-none text-base leading-relaxed"
+   549→   549→          readOnly={isRecording}
+   550→   550→        />
+   551→   551→        {interimText && isRecording && (
+   552→   552→          <div className="absolute bottom-3 left-3 flex items-center gap-2 text-xs text-muted-foreground">
+   553→   553→            <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+   554→   554→            Reconociendo...
+   555→   555→          </div>
+   556→   556→        )}
+   557→   557→      </div>
+   558→   558→
+   559→   559→      {/* Action buttons */}
+   560→   560→      <div className="flex items-center justify-between gap-2 pb-safe">
+   561→   561→        <div className="flex items-center gap-1 flex-wrap">
+   562→   562→          <Button variant="ghost" size="sm" onClick={() => setShowTitleInput(!showTitleInput)} className="text-xs text-muted-foreground">
+   563→   563→            {showTitleInput ? 'Ocultar título' : 'Título'}
+   564→   564→          </Button>
+   565→   565→          <span className="text-muted-foreground/30">|</span>
+   566→   566→          <Button variant="ghost" size="sm" onClick={() => setShowFields(!showFields)} className="text-xs text-muted-foreground">
+   567→   567→            {showFields ? 'Ocultar campos' : activeFieldCount > 0 ? `Campos (${activeFieldCount})` : 'Campos'}
+   568→   568→          </Button>
+   569→   569→        </div>
+   570→   570→        <Button onClick={saveNote} disabled={!transcript.trim() || isSaving} className="gap-2" size="lg">
+   571→   571→          <Save className="h-4 w-4" />
+   572→   572→          {isSaving ? 'Guardando...' : 'Guardar'}
+   573→   573→        </Button>
+   574→   574→      </div>
+   575→   575→
+   576→   576→      {/* Floating mic button */}
+   577→   577→      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 md:static md:translate-x-0 md:z-auto md:mx-auto md:mb-0">
+   578→   578→        <Button
+   579→   579→          onClick={toggleRecording}
+   580→   580→          disabled={!isSupported}
+   581→   581→          size="lg"
+   582→   582→          className={`rounded-full w-16 h-16 md:w-20 md:h-20 shadow-xl transition-all duration-300 ${
+   583→   583→            isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+   584→   584→          }`}
+   585→   585→        >
+   586→   586→          {isRecording ? <MicOff className="h-7 w-7 md:h-8 md:w-8" /> : <Mic className="h-7 w-7 md:h-8 md:w-8" />}
+   587→   587→        </Button>
+   588→   588→        <p className="text-center text-xs text-muted-foreground mt-2">
+   589→   589→          {isRecording ? 'Toca para detener' : 'Toca para dictar'}
+   590→   590→        </p>
+   591→   591→      </div>
+   592→   592→    </div>
+   593→   593→  )
+   594→   594→
+   595→   595→  // ==================== NOTES LIST VIEW ====================
+   596→   596→  const renderListView = () => (
+   597→   597→    <div className="flex flex-col gap-4 flex-1 min-h-0">
+   598→   598→      <div className="flex items-center justify-between">
+   599→   599→        <div className="flex items-center gap-3">
+   600→   600→          <Button variant="ghost" size="icon" onClick={() => setCurrentView('dictation')}>
+   601→   601→            <ArrowLeft className="h-5 w-5" />
+   602→   602→          </Button>
+   603→   603→          <h1 className="text-xl font-bold tracking-tight">Mis Notas</h1>
+   604→   604→        </div>
+   605→   605→        <div className="flex items-center gap-1">
+   606→   606→          {notes.length > 0 && (
+   607→   607→            <Button variant="outline" size="sm" onClick={() => exportNotes(notes)} className="gap-1.5">
+   608→   608→              <Download className="h-4 w-4" />
+   609→   609→              Exportar
+   610→   610→            </Button>
+   611→   611→          )}
+   612→   612→          <Button onClick={() => { resetForm(); setCurrentView('dictation') }} size="sm" className="gap-1.5">
+   613→   613→            <Plus className="h-4 w-4" />
+   614→   614→            Nueva
+   615→   615→          </Button>
+   616→   616→        </div>
+   617→   617→      </div>
+   618→   618→
+   619→   619→      {notes.length === 0 ? (
+   620→   620→        <div className="flex-1 flex flex-col items-center justify-center text-center gap-4 py-12">
+   621→   621→          <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
+   622→   622→            <FileText className="h-8 w-8 text-muted-foreground" />
+   623→   623→          </div>
+   624→   624→          <div>
+   625→   625→            <p className="text-lg font-medium text-muted-foreground">No hay notas</p>
+   626→   626→            <p className="text-sm text-muted-foreground mt-1">Dicta tu primera nota presionando el micrófono.</p>
+   627→   627→          </div>
+   628→   628→          <Button onClick={() => setCurrentView('dictation')} variant="outline" className="gap-2">
+   629→   629→            <Mic className="h-4 w-4" />
+   630→   630→            Empezar a dictar
+   631→   631→          </Button>
+   632→   632→        </div>
+   633→   633→      ) : (
+   634→   634→        <ScrollArea className="flex-1 -mx-1 px-1">
+   635→   635→          <div className="flex flex-col gap-3 pb-4">
+   636→   636→            {notes.map((note) => (
+   637→   637→              <Card
+   638→   638→                key={note.id}
+   639→   639→                className="cursor-pointer hover:shadow-md transition-shadow active:scale-[0.98] transition-transform"
+   640→   640→                onClick={() => { setSelectedNote(note); setCurrentView('detail') }}
+   641→   641→              >
+   642→   642→                <CardContent className="p-4">
+   643→   643→                  <div className="flex items-start justify-between gap-3">
+   644→   644→                    <div className="flex-1 min-w-0">
+   645→   645→                      {note.title && <h3 className="font-semibold text-sm truncate">{note.title}</h3>}
+   646→   646→                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{getPreview(note.content)}</p>
+   647→   647→                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-muted-foreground">
+   648→   648→                        {note.noteDate && (
+   649→   649→                          <span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" />{formatDateShort(note.noteDate)}</span>
+   650→   650→                        )}
+   651→   651→                        {note.axis && (
+   652→   652→                          <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />Eje {note.axis}</span>
+   653→   653→                        )}
+   654→   654→                        {note.address && (
+   655→   655→                          <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{note.address}</span>
+   656→   656→                        )}
+   657→   657→                        <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatDate(note.createdAt)}</span>
+   658→   658→                      </div>
+   659→   659→                    </div>
+   660→   660→                    <Button
+   661→   661→                      variant="ghost" size="icon"
+   662→   662→                      className="shrink-0 text-muted-foreground hover:text-destructive"
+   663→   663→                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(note.id) }}
+   664→   664→                    >
+   665→   665→                      <Trash2 className="h-4 w-4" />
+   666→   666→                    </Button>
+   667→   667→                  </div>
+   668→   668→                </CardContent>
+   669→   669→              </Card>
+   670→   670→            ))}
+   671→   671→          </div>
+   672→   672→        </ScrollArea>
+   673→   673→      )}
+   674→   674→
+   675→   675→      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+   676→   676→        <AlertDialogContent>
+   677→   677→          <AlertDialogHeader>
+   678→   678→            <AlertDialogTitle>Eliminar nota</AlertDialogTitle>
+   679→   679→            <AlertDialogDescription>¿Estás seguro de que quieres eliminar esta nota? Esta acción no se puede deshacer.</AlertDialogDescription>
+   680→   680→          </AlertDialogHeader>
+   681→   681→          <AlertDialogFooter>
+   682→   682→            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+   683→   683→            <AlertDialogAction onClick={() => deleteTarget && deleteNote(deleteTarget)} className="bg-destructive text-white hover:bg-destructive/90">Eliminar</AlertDialogAction>
+   684→   684→          </AlertDialogFooter>
+   685→   685→        </AlertDialogContent>
+   686→   686→      </AlertDialog>
+   687→   687→    </div>
+   688→   688→  )
+   689→   689→
+   690→   690→  // ==================== NOTE DETAIL VIEW ====================
+   691→   691→  const renderDetailView = () => {
+   692→   692→    if (!selectedNote) return null
+   693→   693→    return (
+   694→   694→      <div className="flex flex-col gap-4 flex-1 min-h-0">
+   695→   695→        <div className="flex items-center gap-3">
+   696→   696→          <Button variant="ghost" size="icon" onClick={() => { setSelectedNote(null); setCurrentView('list') }}>
+   697→   697→            <ArrowLeft className="h-5 w-5" />
+   698→   698→          </Button>
+   699→   699→          <div className="flex-1 min-w-0">
+   700→   700→            {selectedNote.title && <h1 className="text-lg font-bold truncate">{selectedNote.title}</h1>}
+   701→   701→            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+   702→   702→              {selectedNote.noteDate && <span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" />{formatDateShort(selectedNote.noteDate)}</span>}
+   703→   703→              {selectedNote.axis && <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />Eje {selectedNote.axis}</span>}
+   704→   704→              {selectedNote.address && <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{selectedNote.address}</span>}
+   705→   705→              <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{formatDate(selectedNote.createdAt)}</span>
+   706→   706→            </div>
+   707→   707→          </div>
+   708→   708→          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => setDeleteTarget(selectedNote.id)}>
+   709→   709→            <Trash2 className="h-5 w-5" />
+   710→   710→          </Button>
+   711→   711→        </div>
+   712→   712→
+   713→   713→        <Separator />
+   714→   714→
+   715→   715→        {/* Metadata card */}
+   716→   716→        {(selectedNote.noteDate || selectedNote.axis || selectedNote.address) && (
+   717→   717→          <div className="grid grid-cols-3 gap-2">
+   718→   718→            {selectedNote.noteDate && (
+   719→   719→              <div className="flex items-center gap-1.5 px-3 py-2 bg-muted/50 rounded-lg text-sm">
+   720→   720→                <CalendarDays className="h-3.5 w-3.5 text-primary shrink-0" />
+   721→   721→                <span className="truncate">{formatDateShort(selectedNote.noteDate)}</span>
+   722→   722→              </div>
+   723→   723→            )}
+   724→   724→            {selectedNote.axis && (
+   725→   725→              <div className="flex items-center gap-1.5 px-3 py-2 bg-muted/50 rounded-lg text-sm">
+   726→   726→                <GitBranch className="h-3.5 w-3.5 text-primary shrink-0" />
+   727→   727→                <span>Eje {selectedNote.axis}</span>
+   728→   728→              </div>
+   729→   729→            )}
+   730→   730→            {selectedNote.address && (
+   731→   731→              <div className="flex items-center gap-1.5 px-3 py-2 bg-muted/50 rounded-lg text-sm col-span-3">
+   732→   732→                <MapPin className="h-3.5 w-3.5 text-primary shrink-0" />
+   733→   733→                <span className="truncate">{selectedNote.address}</span>
+   734→   734→              </div>
+   735→   735→            )}
+   736→   736→          </div>
+   737→   737→        )}
+   738→   738→
+   739→   739→        <ScrollArea className="flex-1 -mx-1 px-1">
+   740→   740→          <div className="whitespace-pre-wrap text-base leading-relaxed pb-4">{selectedNote.content}</div>
+   741→   741→        </ScrollArea>
+   742→   742→
+   743→   743→        <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+   744→   744→          <AlertDialogContent>
+   745→   745→            <AlertDialogHeader>
+   746→   746→              <AlertDialogTitle>Eliminar nota</AlertDialogTitle>
+   747→   747→              <AlertDialogDescription>¿Estás seguro de que quieres eliminar esta nota? Esta acción no se puede deshacer.</AlertDialogDescription>
+   748→   748→            </AlertDialogHeader>
+   749→   749→            <AlertDialogFooter>
+   750→   750→              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+   751→   751→              <AlertDialogAction onClick={() => deleteTarget && deleteNote(deleteTarget)} className="bg-destructive text-white hover:bg-destructive/90">Eliminar</AlertDialogAction>
+   752→   752→            </AlertDialogFooter>
+   753→   753→          </AlertDialogContent>
+   754→   754→        </AlertDialog>
+   755→   755→      </div>
+   756→   756→    )
+   757→   757→  }
+   758→   758→
+   759→   759→  return (
+   760→   760→    <div className="min-h-screen flex flex-col bg-background">
+   761→   761→      <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-md border-b">
+   762→   762→        <div className="max-w-lg mx-auto px-4 py-3 flex items-center gap-3">
+   763→   763→          <Mic className="h-5 w-5 text-primary" />
+   764→   764→          <span className="font-semibold text-base">VoiceNotes</span>
+   765→   765→          {isRecording && (
+   766→   766→            <Badge variant="destructive" className="animate-pulse ml-auto">
+   767→   767→              <span className="inline-block w-1.5 h-1.5 rounded-full bg-white mr-1.5" />
+   768→   768→              Grabando
+   769→   769→            </Badge>
+   770→   770→          )}
+   771→   771→        </div>
+   772→   772→      </header>
+   773→   773→
+   774→   774→      <main className="flex-1 flex flex-col max-w-lg mx-auto w-full px-4 py-4 pb-24 md:pb-4">
+   775→   775→        {currentView === 'dictation' && renderDictationView()}
+   776→   776→        {currentView === 'list' && renderListView()}
+   777→   777→        {currentView === 'detail' && renderDetailView()}
+   778→   778→      </main>
+   779→   779→    </div>
+   780→   780→  )
+   781→   781→}
