@@ -176,10 +176,10 @@ function detectVoiceCommand(text: string): VoiceCommand {
 }
 
 // ─────────────────────────────────────────────
-// EXPORT: genera Word con tabla de notas
+// EXPORT: genera Word y PDF con tabla de notas
 // ─────────────────────────────────────────────
 
-function exportNotes(notes: Note[]) {
+function buildReportHTML(notes: Note[]): string {
   const sorted = [...notes].sort((a, b) => {
     if (a.noteDate && b.noteDate) return new Date(a.noteDate).getTime() - new Date(b.noteDate).getTime()
     if (a.noteDate) return -1
@@ -191,52 +191,70 @@ function exportNotes(notes: Note[]) {
 
   const rows = sorted.map((n) => `
     <tr>
-      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.noteDate ? fmtDate(n.noteDate) : '-'}</td>
-      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;text-align:center;">${n.axis || '-'}</td>
-      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.address || '-'}</td>
-      <td style="border:1px solid #333;padding:8px;vertical-align:top;font-size:13px;">${n.content.replace(/\n/g, '<br>')}</td>
+      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.noteDate ? fmtDate(n.noteDate) : '-'}</td>
+      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;text-align:center;">${n.axis || '-'}</td>
+      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.address || '-'}</td>
+      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.content.replace(/\n/g, '<br>')}</td>
     </tr>
   `).join('')
 
-  const html = `
+  const dateStr = new Date().toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' })
+
+  return `
 <html xmlns:o="urn:schemas-microsoft-com:office:office"
       xmlns:w="urn:schemas-microsoft-com:office:word"
       xmlns="http://www.w3.org/TR/REC-html40">
 <head>
   <meta charset="utf-8">
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    h2 { text-align: center; margin-bottom: 16px; }
+    @page { size: landscape; margin: 15mm; }
+    body { font-family: Arial, sans-serif; margin: 0; }
+    h2 { text-align: center; margin: 0 0 4px 0; font-size: 18px; }
+    .sub { text-align: center; color: #666; font-size: 11px; margin-bottom: 12px; }
     table { border-collapse: collapse; width: 100%; }
-    th { background-color: #222; color: #fff; border: 1px solid #333; padding: 8px; font-size: 13px; }
+    th { background-color: #222; color: #fff; border: 1px solid #333; padding: 6px 8px; font-size: 12px; }
+    td { word-wrap: break-word; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
   </style>
 </head>
 <body>
-  <h2>Notas Dictadas</h2>
-  <p style="text-align:center;color:#666;font-size:12px;margin-bottom:16px;">
-    Generado el ${new Date().toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' })} — ${sorted.length} nota(s)
-  </p>
+  <h2>Reporte</h2>
+  <p class="sub">${dateStr}</p>
   <table>
     <thead><tr>
-      <th style="width:100px;">Fecha</th>
-      <th style="width:60px;">Eje</th>
-      <th style="width:180px;">Dirección</th>
+      <th style="width:90px;">Fecha</th>
+      <th style="width:50px;">Eje</th>
+      <th style="width:200px;">Dirección</th>
       <th>Contenido</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>
 </body>
 </html>`
+}
 
+function exportAsWord(notes: Note[]) {
+  const html = buildReportHTML(notes)
   const blob = new Blob(['\ufeff' + html], { type: 'application/msword' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `notas_dictadas_${new Date().toISOString().slice(0, 10)}.doc`
+  a.download = `reporte_${new Date().toISOString().slice(0, 10)}.doc`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+function exportAsPDF(notes: Note[]) {
+  const html = buildReportHTML(notes)
+  const w = window.open('', '_blank')
+  if (w) {
+    w.document.write(html)
+    w.document.close()
+    w.focus()
+    setTimeout(() => { w.print() }, 300)
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -263,6 +281,7 @@ export default function Home() {
   const [selectedNote, setSelectedNote] = useState<Note | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [showExportMenu, setShowExportMenu] = useState(false)
 
   // Refs
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
@@ -663,10 +682,31 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-1">
           {notes.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => exportNotes(notes)} className="h-8 gap-1 text-xs">
-              <Download className="h-3.5 w-3.5" />
-              Exportar
-            </Button>
+            <div className="relative">
+              <Button variant="outline" size="sm" onClick={() => setShowExportMenu(!showExportMenu)} className="h-8 gap-1 text-xs">
+                <Download className="h-3.5 w-3.5" />
+                Exportar
+              </Button>
+              {showExportMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-md overflow-hidden min-w-[120px]">
+                    <button
+                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted active:bg-muted/80 transition-colors flex items-center gap-2"
+                      onClick={() => { setShowExportMenu(false); exportAsWord(notes) }}
+                    >
+                      Word (.doc)
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted active:bg-muted/80 transition-colors border-t flex items-center gap-2"
+                      onClick={() => { setShowExportMenu(false); exportAsPDF(notes) }}
+                    >
+                      PDF
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
           <Button onClick={() => { resetForm(); setCurrentView('dictation') }} size="sm" className="h-8 gap-1 text-xs">
             <Plus className="h-3.5 w-3.5" />
