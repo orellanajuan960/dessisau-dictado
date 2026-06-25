@@ -1,0 +1,864 @@
+     1→'use client'
+     2→
+     3→import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+     4→import { Button } from '@/components/ui/button'
+     5→import { Textarea } from '@/components/ui/textarea'
+     6→import { Card, CardContent } from '@/components/ui/card'
+     7→import { Input } from '@/components/ui/input'
+     8→import { Badge } from '@/components/ui/badge'
+     9→import { ScrollArea } from '@/components/ui/scroll-area'
+    10→import { Separator } from '@/components/ui/separator'
+    11→import {
+    12→  AlertDialog,
+    13→  AlertDialogAction,
+    14→  AlertDialogCancel,
+    15→  AlertDialogContent,
+    16→  AlertDialogDescription,
+    17→  AlertDialogFooter,
+    18→  AlertDialogHeader,
+    19→  AlertDialogTitle,
+    20→} from '@/components/ui/alert-dialog'
+    21→import { useToast } from '@/hooks/use-toast'
+    22→import {
+    23→  Mic, MicOff, Save, Trash2, FileText, ArrowLeft, Plus,
+    24→  Clock, CalendarDays, X, MapPin, GitBranch, Download, Eraser, ChevronDown,
+    25→} from 'lucide-react'
+    26→
+    27→type SpeechRecognitionInstance = any
+    28→
+    29→interface Note {
+    30→  id: string
+    31→  title: string | null
+    32→  content: string
+    33→  noteDate: string | null
+    34→  axis: string | null
+    35→  address: string | null
+    36→  createdAt: string
+    37→  updatedAt: string
+    38→}
+    39→
+    40→type View = 'dictation' | 'list' | 'detail'
+    41→
+    42→// ─────────────────────────────────────────────
+    43→// RAW TRANSCRIPT FIELD EXTRACTOR
+    44→// Scans the FULL accumulated text so split chunks still match
+    45→// ─────────────────────────────────────────────
+    46→
+    47→const MONTH_NAMES: Record<string, number> = {
+    48→  enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+    49→  julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+    50→}
+    51→
+    52→const SPANISH_NUMBERS: Record<string, string> = {
+    53→  uno: '1', una: '1', dos: '2', tres: '3', cuatro: '4', cinco: '5',
+    54→  seis: '6', siete: '7', ocho: '8', nueve: '9', diez: '10',
+    55→  once: '11', doce: '12', trece: '13', catorce: '14', quince: '15',
+    56→  dieciseis: '16', diecisiete: '17', dieciocho: '18', diecinueve: '19', veinte: '20',
+    57→  veintiuno: '21', veintidos: '22', veintitres: '23', veinticuatro: '24', veinticinco: '25',
+    58→  veintiseis: '26', veintisiete: '27', veintiocho: '28', veintinueve: '29',
+    59→  treinta: '30', cuarenta: '40', cincuenta: '50', sesenta: '60', setenta: '70',
+    60→  ochenta: '80', noventa: '90', cien: '100',
+    61→}
+    62→
+    63→// Regex patterns (compiled once, reused)
+    64→const RE_DATE_NAMED = /fecha\s+(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+de\s+(\d{2,4})/gi
+    65→const RE_DATE_NAMED2 = /fecha\s+(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+del\s+(\d{2,4})/gi
+    66→const RE_DATE_NUMERIC = /fecha\s+(\d{1,2})[\s./\-]+(\d{1,2})[\s./\-]+(\d{2,4})/gi
+    67→const RE_AXIS = /eje\s+(?:n[uú]mero\s+)?(\d+|[a-záéíóúñ]+)/gi
+    68→const RE_ADDRESS = /direcci[oó]n\s+((?:\S+\s*){1,8})/gi
+    69→
+    70→interface FieldResult {
+    71→  cleaned: string
+    72→  date: string
+    73→  axis: string
+    74→  address: string
+    75→}
+    76→
+    77→function dateToInputValue(d: Date): string {
+    78→  const yyyy = d.getFullYear()
+    79→  const mm = String(d.getMonth() + 1).padStart(2, '0')
+    80→  const dd = String(d.getDate()).padStart(2, '0')
+    81→  return `${yyyy}-${mm}-${dd}`
+    82→}
+    83→
+    84→/**
+    85→ * Scans the FULL raw transcript, extracts the LAST match of each field,
+    86→ * removes ALL field matches, and returns the cleaned text + field values.
+    87→ */
+    88→function extractFieldsFromRaw(raw: string): FieldResult {
+    89→  let date = ''
+    90→  let axis = ''
+    91→  let address = ''
+    92→  let cleaned = raw
+    93→
+    94→  // --- Date: "fecha 26 de junio de 2026" ---
+    95→  RE_DATE_NAMED.lastIndex = 0
+    96→  let m: RegExpExecArray | null
+    97→  while ((m = RE_DATE_NAMED.exec(cleaned)) !== null) {
+    98→    const day = parseInt(m[1], 10)
+    99→    const month = MONTH_NAMES[m[2].toLowerCase()]
+   100→    let year = parseInt(m[3], 10)
+   101→    if (year < 100) year += 2000
+   102→    if (month !== undefined) {
+   103→      const d = new Date(year, month, day)
+   104→      if (!isNaN(d.getTime())) date = dateToInputValue(d)
+   105→    }
+   106→  }
+   107→  cleaned = cleaned.replace(RE_DATE_NAMED, ' ')
+   108→
+   109→  // --- Date: "fecha 26 de junio del 2026" ---
+   110→  RE_DATE_NAMED2.lastIndex = 0
+   111→  while ((m = RE_DATE_NAMED2.exec(cleaned)) !== null) {
+   112→    const day = parseInt(m[1], 10)
+   113→    const month = MONTH_NAMES[m[2].toLowerCase()]
+   114→    let year = parseInt(m[3], 10)
+   115→    if (year < 100) year += 2000
+   116→    if (month !== undefined) {
+   117→      const d = new Date(year, month, day)
+   118→      if (!isNaN(d.getTime())) date = dateToInputValue(d)
+   119→    }
+   120→  }
+   121→  cleaned = cleaned.replace(RE_DATE_NAMED2, ' ')
+   122→
+   123→  // --- Date: "fecha 20 06 2026" ---
+   124→  RE_DATE_NUMERIC.lastIndex = 0
+   125→  while ((m = RE_DATE_NUMERIC.exec(cleaned)) !== null) {
+   126→    const a = parseInt(m[1], 10)
+   127→    const b = parseInt(m[2], 10)
+   128→    let c = parseInt(m[3], 10)
+   129→    if (c < 100) c += 2000
+   130→    const d1 = new Date(c, b - 1, a)
+   131→    if (!isNaN(d1.getTime()) && d1.getDate() === a && d1.getMonth() === b - 1) {
+   132→      date = dateToInputValue(d1)
+   133→    }
+   134→  }
+   135→  cleaned = cleaned.replace(RE_DATE_NUMERIC, ' ')
+   136→
+   137→  // --- Axis: "eje 3", "eje número 3", "eje tres" ---
+   138→  RE_AXIS.lastIndex = 0
+   139→  while ((m = RE_AXIS.exec(cleaned)) !== null) {
+   140→    const v = m[1].toLowerCase().trim()
+   141→    const num = SPANISH_NUMBERS[v] || (/^\d+$/.test(v) ? v : null)
+   142→    if (num) axis = num
+   143→  }
+   144→  cleaned = cleaned.replace(RE_AXIS, ' ')
+   145→
+   146→  // --- Address: "dirección santa rosa de cua" (up to 8 words) ---
+   147→  RE_ADDRESS.lastIndex = 0
+   148→  while ((m = RE_ADDRESS.exec(cleaned)) !== null) {
+   149→    const v = m[1].trim()
+   150→    if (v.length > 0) address = v
+   151→  }
+   152→  cleaned = cleaned.replace(RE_ADDRESS, ' ')
+   153→
+   154→  return {
+   155→    cleaned: cleaned.replace(/\s{2,}/g, ' ').trim(),
+   156→    date,
+   157→    axis,
+   158→    address,
+   159→  }
+   160→}
+   161→
+   162→// ─────────────────────────────────────────────
+   163→// VOICE COMMANDS
+   164→// ─────────────────────────────────────────────
+   165→
+   166→type VoiceCommand = 'clear' | 'deleteLastWord' | 'deleteLastLine' | 'save' | 'pause' | null
+   167→
+   168→function detectVoiceCommand(text: string): VoiceCommand {
+   169→  const lower = text.toLowerCase().trim()
+   170→  if (/^borrar\s+(?:la\s+)?(?:caja\s+de\s+)?texto|^limpiar\s+(?:la\s+)?(?:caja\s+de\s+)?texto|^borrar\s+todo/.test(lower)) return 'clear'
+   171→  if (/borrar\s+(?:la\s+)?[úu]ltima\s+palabra/.test(lower)) return 'deleteLastWord'
+   172→  if (/borrar\s+(?:la\s+)?[úu]ltima\s+l[ií]nea/.test(lower)) return 'deleteLastLine'
+   173→  if (/^guarda?r(?:\s+nota)?$/.test(lower)) return 'save'
+   174→  if (/^pausa(?:r)?$/.test(lower)) return 'pause'
+   175→  return null
+   176→}
+   177→
+   178→// ─────────────────────────────────────────────
+   179→// EXPORT: genera Word y PDF con tabla de notas
+   180→// ─────────────────────────────────────────────
+   181→
+   182→function buildReportHTML(notes: Note[]): string {
+   183→  const sorted = [...notes].sort((a, b) => {
+   184→    if (a.noteDate && b.noteDate) return new Date(a.noteDate).getTime() - new Date(b.noteDate).getTime()
+   185→    if (a.noteDate) return -1
+   186→    if (b.noteDate) return 1
+   187→    return 0
+   188→  })
+   189→
+   190→  const fmtDate = (d: string) => new Date(d).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+   191→
+   192→  const rows = sorted.map((n) => `
+   193→    <tr>
+   194→      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.noteDate ? fmtDate(n.noteDate) : '-'}</td>
+   195→      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;text-align:center;">${n.axis || '-'}</td>
+   196→      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.address || '-'}</td>
+   197→      <td style="border:1px solid #333;padding:6px 8px;vertical-align:top;font-size:12px;">${n.content.replace(/\n/g, '<br>')}</td>
+   198→    </tr>
+   199→  `).join('')
+   200→
+   201→  const dateStr = new Date().toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' })
+   202→
+   203→  return `
+   204→<html xmlns:o="urn:schemas-microsoft-com:office:office"
+   205→      xmlns:w="urn:schemas-microsoft-com:office:word"
+   206→      xmlns="http://www.w3.org/TR/REC-html40">
+   207→<head>
+   208→  <meta charset="utf-8">
+   209→  <style>
+   210→    @page { size: landscape; margin: 15mm; }
+   211→    body { font-family: Arial, sans-serif; margin: 0; }
+   212→    h2 { text-align: center; margin: 0 0 4px 0; font-size: 18px; }
+   213→    .sub { text-align: center; color: #666; font-size: 11px; margin-bottom: 12px; }
+   214→    table { border-collapse: collapse; width: 100%; }
+   215→    th { background-color: #222; color: #fff; border: 1px solid #333; padding: 6px 8px; font-size: 12px; }
+   216→    td { word-wrap: break-word; }
+   217→    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+   218→  </style>
+   219→</head>
+   220→<body>
+   221→  <h2>Reporte</h2>
+   222→  <p class="sub">${dateStr}</p>
+   223→  <table>
+   224→    <thead><tr>
+   225→      <th style="width:90px;">Fecha</th>
+   226→      <th style="width:50px;">Eje</th>
+   227→      <th style="width:200px;">Dirección</th>
+   228→      <th>Contenido</th>
+   229→    </tr></thead>
+   230→    <tbody>${rows}</tbody>
+   231→  </table>
+   232→</body>
+   233→</html>`
+   234→}
+   235→
+   236→function exportAsWord(notes: Note[]) {
+   237→  const html = buildReportHTML(notes)
+   238→  const blob = new Blob(['\ufeff' + html], { type: 'application/msword' })
+   239→  const url = URL.createObjectURL(blob)
+   240→  const a = document.createElement('a')
+   241→  a.href = url
+   242→  a.download = `reporte_${new Date().toISOString().slice(0, 10)}.doc`
+   243→  document.body.appendChild(a)
+   244→  a.click()
+   245→  document.body.removeChild(a)
+   246→  URL.revokeObjectURL(url)
+   247→}
+   248→
+   249→function exportAsPDF(notes: Note[]) {
+   250→  const html = buildReportHTML(notes)
+   251→  const w = window.open('', '_blank')
+   252→  if (w) {
+   253→    w.document.write(html)
+   254→    w.document.close()
+   255→    w.focus()
+   256→    setTimeout(() => { w.print() }, 300)
+   257→  }
+   258→}
+   259→
+   260→// ─────────────────────────────────────────────
+   261→// COMPONENT
+   262→// ─────────────────────────────────────────────
+   263→
+   264→export default function Home() {
+   265→  const [isRecording, setIsRecording] = useState(false)
+   266→  const [transcript, setTranscript] = useState('')
+   267→  const [interimText, setInterimText] = useState('')
+   268→  const [recognitionError, setRecognitionError] = useState('')
+   269→  const [isSupported, setIsSupported] = useState(true)
+   270→
+   271→  const [noteTitle, setNoteTitle] = useState('')
+   272→  const [noteDate, setNoteDate] = useState('')
+   273→  const [noteAxis, setNoteAxis] = useState('')
+   274→  const [noteAddress, setNoteAddress] = useState('')
+   275→
+   276→  const [showTitleInput, setShowTitleInput] = useState(false)
+   277→  const [showFields, setShowFields] = useState(false)
+   278→
+   279→  const [notes, setNotes] = useState<Note[]>([])
+   280→  const [currentView, setCurrentView] = useState<View>('dictation')
+   281→  const [selectedNote, setSelectedNote] = useState<Note | null>(null)
+   282→  const [isSaving, setIsSaving] = useState(false)
+   283→  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+   284→  const [showExportMenu, setShowExportMenu] = useState(false)
+   285→
+   286→  // Refs
+   287→  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
+   288→  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+   289→  const rawTranscriptRef = useRef('')   // raw text BEFORE field removal
+   290→  const transcriptRef = useRef('')      // cleaned display text (kept in sync with state)
+   291→  const isRecordingRef = useRef(false)
+   292→  const fieldsRef = useRef({ title: '', date: '', axis: '', address: '' })
+   293→  const saveNoteRef = useRef<() => Promise<void>>(() => Promise.resolve())
+   294→  const { toast } = useToast()
+   295→
+   296→  useEffect(() => { transcriptRef.current = transcript }, [transcript])
+   297→  useEffect(() => { isRecordingRef.current = isRecording }, [isRecording])
+   298→  useEffect(() => { fieldsRef.current = { title: noteTitle, date: noteDate, axis: noteAxis, address: noteAddress } }, [noteTitle, noteDate, noteAxis, noteAddress])
+   299→
+   300→  useEffect(() => {
+   301→    const SR = typeof window !== 'undefined'
+   302→      ? (window as unknown as Record<string, unknown>).SpeechRecognition ||
+   303→        (window as unknown as Record<string, unknown>).webkitSpeechRecognition
+   304→      : null
+   305→    if (!SR) setIsSupported(false)
+   306→  }, [])
+   307→
+   308→  const fetchNotes = useCallback(async () => {
+   309→    try {
+   310→      const res = await fetch('/api/notes')
+   311→      if (res.ok) setNotes(await res.json())
+   312→    } catch {
+   313→      toast({ title: 'Error', description: 'No se pudieron cargar las notas.', variant: 'destructive' })
+   314→    }
+   315→  }, [toast])
+   316→
+   317→  useEffect(() => { fetchNotes() }, [fetchNotes])
+   318→
+   319→  // ─── Process raw transcript: extract fields, return cleaned text ───
+   320→  const processAndSet = useCallback((raw: string) => {
+   321→    const result = extractFieldsFromRaw(raw)
+   322→    rawTranscriptRef.current = result.cleaned
+   323→    transcriptRef.current = result.cleaned
+   324→    setTranscript(result.cleaned)
+   325→    if (result.date) setNoteDate(result.date)
+   326→    if (result.axis) setNoteAxis(result.axis)
+   327→    if (result.address) setNoteAddress(result.address)
+   328→  }, [])
+   329→
+   330→  // ─── Halt recognition immediately (no restart) ───
+   331→  const haltRecognition = useCallback(() => {
+   332→    if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null }
+   333→    if (recognitionRef.current) { recognitionRef.current.abort(); recognitionRef.current = null }
+   334→    isRecordingRef.current = false
+   335→    setIsRecording(false)
+   336→    setInterimText('')
+   337→  }, [])
+   338→
+   339→  // ─── Start speech recognition ───
+   340→  const startRecognition = useCallback(() => {
+   341→    const SpeechRecognitionAPI = typeof window !== 'undefined'
+   342→      ? (window as unknown as Record<string, unknown>).SpeechRecognition ||
+   343→        (window as unknown as Record<string, unknown>).webkitSpeechRecognition
+   344→      : null
+   345→    if (!SpeechRecognitionAPI) return
+   346→
+   347→    const recognition = new (SpeechRecognitionAPI as new () => SpeechRecognitionInstance)()
+   348→    recognition.lang = 'es-ES'
+   349→    recognition.continuous = true
+   350→    recognition.interimResults = true
+   351→
+   352→    recognition.onresult = (event: SpeechRecognitionEvent) => {
+   353→      let interim = ''
+   354→      for (let i = event.resultIndex; i < event.results.length; i++) {
+   355→        const result = event.results[i]
+   356→        if (result.isFinal) {
+   357→          const raw = (result[0].transcript + ' ').trim()
+   358→
+   359→          // Voice commands (checked BEFORE adding to transcript)
+   360→          const cmd = detectVoiceCommand(raw)
+   361→          if (cmd === 'clear') {
+   362→            rawTranscriptRef.current = ''
+   363→            transcriptRef.current = ''
+   364→            setTranscript('')
+   365→            return
+   366→          }
+   367→          if (cmd === 'deleteLastWord') {
+   368→            const current = rawTranscriptRef.current.trim()
+   369→            const words = current.split(/\s+/)
+   370→            words.pop()
+   371→            const updated = words.join(' ')
+   372→            processAndSet(updated)
+   373→            return
+   374→          }
+   375→          if (cmd === 'deleteLastLine') {
+   376→            const current = rawTranscriptRef.current.trimEnd()
+   377→            const lines = current.split('\n')
+   378→            lines.pop()
+   379→            processAndSet(lines.join('\n'))
+   380→            return
+   381→          }
+   382→          if (cmd === 'save') {
+   383→            haltRecognition()
+   384→            setTimeout(() => saveNoteRef.current(), 150)
+   385→            return
+   386→          }
+   387→          if (cmd === 'pause') {
+   388→            haltRecognition()
+   389→            return
+   390→          }
+   391→
+   392→          // Append raw chunk and re-process the FULL text
+   393→          const fullRaw = rawTranscriptRef.current + (rawTranscriptRef.current ? ' ' : '') + raw
+   394→          processAndSet(fullRaw)
+   395→        } else {
+   396→          interim += result[0].transcript
+   397→        }
+   398→      }
+   399→      setInterimText(interim)
+   400→    }
+   401→
+   402→    recognition.onerror = (event: { error: string }) => {
+   403→      console.error('Speech error:', event.error)
+   404→      if (event.error === 'not-allowed') {
+   405→        setRecognitionError('Permiso de micrófono denegado.')
+   406→        isRecordingRef.current = false
+   407→        setIsRecording(false)
+   408→      } else if (event.error === 'no-speech' && isRecordingRef.current) {
+   409→        restartTimeoutRef.current = setTimeout(() => { try { recognition.start() } catch { /* */ } }, 500)
+   410→      } else if (event.error === 'network') {
+   411→        setRecognitionError('Error de red.')
+   412→        isRecordingRef.current = false
+   413→        setIsRecording(false)
+   414→      }
+   415→    }
+   416→
+   417→    recognition.onend = () => {
+   418→      if (isRecordingRef.current) {
+   419→        restartTimeoutRef.current = setTimeout(() => { try { recognition.start() } catch { /* */ } }, 300)
+   420→      }
+   421→    }
+   422→
+   423→    recognitionRef.current = recognition
+   424→    try {
+   425→      recognition.start()
+   426→      isRecordingRef.current = true
+   427→      setIsRecording(true)
+   428→      setRecognitionError('')
+   429→    } catch {
+   430→      toast({ title: 'Error', description: 'No se pudo iniciar el micrófono.', variant: 'destructive' })
+   431→    }
+   432→  }, [toast, haltRecognition, processAndSet])
+   433→
+   434→  const stopRecognition = useCallback(() => {
+   435→    if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null }
+   436→    if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null }
+   437→    isRecordingRef.current = false
+   438→    setIsRecording(false)
+   439→    setInterimText('')
+   440→  }, [])
+   441→
+   442→  const toggleRecording = useCallback(() => {
+   443→    if (isRecordingRef.current) { stopRecognition() } else { startRecognition() }
+   444→  }, [startRecognition, stopRecognition])
+   445→
+   446→  useEffect(() => {
+   447→    return () => {
+   448→      if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current)
+   449→      if (recognitionRef.current) recognitionRef.current.stop()
+   450→    }
+   451→  }, [])
+   452→
+   453→  const resetForm = useCallback(() => {
+   454→    rawTranscriptRef.current = ''
+   455→    transcriptRef.current = ''
+   456→    setTranscript('')
+   457→    setNoteTitle('')
+   458→    setNoteDate('')
+   459→    setNoteAxis('')
+   460→    setNoteAddress('')
+   461→    fieldsRef.current = { title: '', date: '', axis: '', address: '' }
+   462→    setShowTitleInput(false)
+   463→    setShowFields(false)
+   464→  }, [])
+   465→
+   466→  const saveNote = useCallback(async () => {
+   467→    const content = transcriptRef.current.trim()
+   468→    if (!content) {
+   469→      toast({ title: 'Nota vacía', description: 'Dicta algo antes de guardar.', variant: 'destructive' })
+   470→      return
+   471→    }
+   472→    const { title, date, axis, address } = fieldsRef.current
+   473→    setIsSaving(true)
+   474→    try {
+   475→      const res = await fetch('/api/notes', {
+   476→        method: 'POST',
+   477→        headers: { 'Content-Type': 'application/json' },
+   478→        body: JSON.stringify({
+   479→          content,
+   480→          title: title.trim() || null,
+   481→          noteDate: date || null,
+   482→          axis: axis.trim() || null,
+   483→          address: address.trim() || null,
+   484→        }),
+   485→      })
+   486→      if (res.ok) {
+   487→        toast({ title: 'Nota guardada' })
+   488→        resetForm()
+   489→        fetchNotes()
+   490→        setCurrentView('list')
+   491→      } else {
+   492→        const errData = await res.json().catch(() => null)
+   493→        throw new Error(errData?.error || 'Error al guardar')
+   494→      }
+   495→    } catch (err) {
+   496→      toast({ title: 'Error', description: err instanceof Error ? err.message : 'No se pudo guardar.', variant: 'destructive' })
+   497→    } finally {
+   498→      setIsSaving(false)
+   499→    }
+   500→  }, [toast, fetchNotes, resetForm])
+   501→
+   502→  useEffect(() => { saveNoteRef.current = saveNote }, [saveNote])
+   503→
+   504→  const deleteNote = async (id: string) => {
+   505→    try {
+   506→      const res = await fetch(`/api/notes/${id}`, { method: 'DELETE' })
+   507→      if (res.ok) {
+   508→        toast({ title: 'Eliminada' })
+   509→        setNotes((prev) => prev.filter((n) => n.id !== id))
+   510→        if (selectedNote?.id === id) { setSelectedNote(null); setCurrentView('list') }
+   511→      }
+   512→    } catch {
+   513→      toast({ title: 'Error', description: 'No se pudo eliminar.', variant: 'destructive' })
+   514→    }
+   515→    setDeleteTarget(null)
+   516→  }
+   517→
+   518→  const formatDate = (d: string) => new Date(d).toLocaleDateString('es-VE', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+   519→  const formatDateShort = (d: string) => new Date(d).toLocaleDateString('es-VE', { day: 'numeric', month: 'short', year: 'numeric' })
+   520→  const getPreview = (c: string) => c.length > 100 ? c.substring(0, 100) + '...' : c
+   521→
+   522→  const displayText = useMemo(() => {
+   523→    const base = transcript.trim()
+   524→    const interim = interimText.trim()
+   525→    return interim ? base + (base ? ' ' : '') + interim : base
+   526→  }, [transcript, interimText])
+   527→
+   528→  const activeFieldCount = [noteDate, noteAxis, noteAddress].filter(Boolean).length
+   529→
+   530→  // ==================== DICTATION VIEW ====================
+   531→  const renderDictationView = () => (
+   532→    <div className="flex flex-col h-full">
+   533→      {/* ── Text area (fills available space) ── */}
+   534→      <div className="flex-1 min-h-0 relative">
+   535→        <Textarea
+   536→          value={displayText}
+   537→          onChange={(e) => {
+   538→            if (!isRecording) {
+   539→              const v = e.target.value
+   540→              rawTranscriptRef.current = v
+   541→              transcriptRef.current = v
+   542→              setTranscript(v)
+   543→            }
+   544→          }}
+   545→          placeholder={isRecording ? 'Escuchando...' : 'Presiona 🎤 para dictar'}
+   546→          className="w-full h-full rounded-none border-0 border-b text-[16px] leading-relaxed resize-none bg-transparent px-4 pt-3 pb-2 focus-visible:ring-0"
+   547→          readOnly={isRecording}
+   548→        />
+   549→        {/* Clear button */}
+   550→        {transcript.length > 0 && !isRecording && (
+   551→          <button
+   552→            className="absolute top-2 right-2 p-1.5 rounded-full text-muted-foreground/50 hover:text-destructive active:scale-90 transition-colors"
+   553→            onClick={() => { rawTranscriptRef.current = ''; transcriptRef.current = ''; setTranscript('') }}
+   554→          >
+   555→            <Eraser className="h-4 w-4" />
+   556→          </button>
+   557→        )}
+   558→        {/* Recording indicator */}
+   559→        {interimText && isRecording && (
+   560→          <div className="absolute bottom-2 left-4 flex items-center gap-1.5 text-xs text-muted-foreground">
+   561→            <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+   562→            escuchando...
+   563→          </div>
+   564→        )}
+   565→      </div>
+   566→
+   567→      {/* ── Bottom panel ── */}
+   568→      <div className="shrink-0 bg-background">
+   569→        {/* Detected fields banner (when panel closed) */}
+   570→        {!showFields && activeFieldCount > 0 && (
+   571→          <div
+   572→            className="flex items-center gap-2 px-4 py-1.5 text-xs text-primary border-b cursor-pointer active:bg-muted/50"
+   573→            onClick={() => setShowFields(true)}
+   574→          >
+   575→            {noteDate && <span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" />{formatDateShort(noteDate)}</span>}
+   576→            {noteAxis && <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />Eje {noteAxis}</span>}
+   577→            {noteAddress && <span className="flex items-center gap-1 truncate"><MapPin className="h-3 w-3 shrink-0" />{noteAddress}</span>}
+   578→          </div>
+   579→        )}
+   580→
+   581→        {/* Expandable: Title input */}
+   582→        {showTitleInput && (
+   583→          <div className="px-4 py-2 border-b">
+   584→            <Input
+   585→              placeholder="Título (opcional)"
+   586→              value={noteTitle}
+   587→              onChange={(e) => setNoteTitle(e.target.value)}
+   588→              className="h-9 text-sm"
+   589→              autoFocus
+   590→            />
+   591→          </div>
+   592→        )}
+   593→
+   594→        {/* Expandable: Fields panel */}
+   595→        {showFields && (
+   596→          <div className="flex flex-col gap-2 px-4 py-2.5 border-b bg-muted/20">
+   597→            <div className="flex items-center gap-2">
+   598→              <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
+   599→              <Input type="date" value={noteDate} onChange={(e) => setNoteDate(e.target.value)} className="text-sm flex-1 h-9" />
+   600→              {noteDate && <button className="p-1" onClick={() => setNoteDate('')}><X className="h-3.5 w-3.5 text-muted-foreground" /></button>}
+   601→            </div>
+   602→            <div className="flex items-center gap-2">
+   603→              <GitBranch className="h-4 w-4 text-muted-foreground shrink-0" />
+   604→              <Input placeholder="Eje" value={noteAxis} onChange={(e) => setNoteAxis(e.target.value)} className="text-sm flex-1 h-9" />
+   605→              {noteAxis && <button className="p-1" onClick={() => setNoteAxis('')}><X className="h-3.5 w-3.5 text-muted-foreground" /></button>}
+   606→            </div>
+   607→            <div className="flex items-center gap-2">
+   608→              <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
+   609→              <Input placeholder="Dirección" value={noteAddress} onChange={(e) => setNoteAddress(e.target.value)} className="text-sm flex-1 h-9" />
+   610→              {noteAddress && <button className="p-1" onClick={() => setNoteAddress('')}><X className="h-3.5 w-3.5 text-muted-foreground" /></button>}
+   611→            </div>
+   612→          </div>
+   613→        )}
+   614→
+   615→        {/* Action row */}
+   616→        <div className="flex items-center justify-between px-3 py-2">
+   617→          <div className="flex items-center gap-1">
+   618→            <button
+   619→              className="px-2 py-1 text-xs text-muted-foreground rounded hover:bg-muted active:bg-muted/80 transition-colors"
+   620→              onClick={() => setShowTitleInput(!showTitleInput)}
+   621→            >
+   622→              Título
+   623→            </button>
+   624→            <span className="text-border">|</span>
+   625→            <button
+   626→              className="px-2 py-1 text-xs text-muted-foreground rounded hover:bg-muted active:bg-muted/80 transition-colors"
+   627→              onClick={() => setShowFields(!showFields)}
+   628→            >
+   629→              Campos{activeFieldCount > 0 ? ` (${activeFieldCount})` : ''}
+   630→            </button>
+   631→          </div>
+   632→          <div className="flex items-center gap-2">
+   633→            <button
+   634→              className="px-2 py-1 text-xs text-muted-foreground rounded hover:bg-muted"
+   635→              onClick={() => { setCurrentView('list'); fetchNotes() }}
+   636→            >
+   637→              <FileText className="h-4 w-4" />
+   638→            </button>
+   639→            <Button
+   640→              onClick={saveNote}
+   641→              disabled={!transcript.trim() || isSaving}
+   642→              size="sm"
+   643→              className="h-8 px-4 text-xs"
+   644→            >
+   645→              <Save className="h-3.5 w-3.5 mr-1" />
+   646→              {isSaving ? '...' : 'Guardar'}
+   647→            </Button>
+   648→          </div>
+   649→        </div>
+   650→
+   651→        {/* Mic button + safe area */}
+   652→        <div className="flex flex-col items-center pb-[max(env(safe-area-inset-bottom,8px),8px)] pt-1">
+   653→          <Button
+   654→            onClick={toggleRecording}
+   655→            disabled={!isSupported}
+   656→            className={`rounded-full w-14 h-14 shadow-lg transition-all duration-200 ${
+   657→              isRecording
+   658→                ? 'bg-red-500 hover:bg-red-600 text-white'
+   659→                : 'bg-foreground hover:bg-foreground/90 text-background'
+   660→            }`}
+   661→          >
+   662→            {isRecording ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
+   663→          </Button>
+   664→          <p className="text-[10px] text-muted-foreground/50 mt-1 h-3">
+   665→            {isRecording ? 'tocar para pausar' : ''}
+   666→          </p>
+   667→        </div>
+   668→      </div>
+   669→    </div>
+   670→  )
+   671→
+   672→  // ==================== NOTES LIST VIEW ====================
+   673→  const renderListView = () => (
+   674→    <div className="flex flex-col h-full">
+   675→      <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
+   676→        <div className="flex items-center gap-2">
+   677→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setCurrentView('dictation')}>
+   678→            <ArrowLeft className="h-4 w-4" />
+   679→          </Button>
+   680→          <h1 className="text-base font-bold">Mis Notas</h1>
+   681→          {notes.length > 0 && <Badge variant="secondary" className="text-[10px]">{notes.length}</Badge>}
+   682→        </div>
+   683→        <div className="flex items-center gap-1">
+   684→          {notes.length > 0 && (
+   685→            <div className="relative">
+   686→              <Button variant="outline" size="sm" onClick={() => setShowExportMenu(!showExportMenu)} className="h-8 gap-1 text-xs">
+   687→                <Download className="h-3.5 w-3.5" />
+   688→                Exportar
+   689→              </Button>
+   690→              {showExportMenu && (
+   691→                <>
+   692→                  <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />
+   693→                  <div className="absolute right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-md overflow-hidden min-w-[120px]">
+   694→                    <button
+   695→                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted active:bg-muted/80 transition-colors flex items-center gap-2"
+   696→                      onClick={() => { setShowExportMenu(false); exportAsWord(notes) }}
+   697→                    >
+   698→                      Word (.doc)
+   699→                    </button>
+   700→                    <button
+   701→                      className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted active:bg-muted/80 transition-colors border-t flex items-center gap-2"
+   702→                      onClick={() => { setShowExportMenu(false); exportAsPDF(notes) }}
+   703→                    >
+   704→                      PDF
+   705→                    </button>
+   706→                  </div>
+   707→                </>
+   708→              )}
+   709→            </div>
+   710→          )}
+   711→          <Button onClick={() => { resetForm(); setCurrentView('dictation') }} size="sm" className="h-8 gap-1 text-xs">
+   712→            <Plus className="h-3.5 w-3.5" />
+   713→            Nueva
+   714→          </Button>
+   715→        </div>
+   716→      </div>
+   717→
+   718→      {notes.length === 0 ? (
+   719→        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
+   720→          <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center">
+   721→            <FileText className="h-6 w-6 text-muted-foreground" />
+   722→          </div>
+   723→          <p className="text-sm text-muted-foreground text-center">No hay notas aún.<br />Dicta tu primera nota.</p>
+   724→          <Button onClick={() => setCurrentView('dictation')} variant="outline" size="sm" className="gap-1.5">
+   725→            <Mic className="h-4 w-4" /> Dictar
+   726→          </Button>
+   727→        </div>
+   728→      ) : (
+   729→        <ScrollArea className="flex-1">
+   730→          <div className="flex flex-col p-3 gap-2">
+   731→            {notes.map((note) => (
+   732→              <Card
+   733→                key={note.id}
+   734→                className="cursor-pointer active:scale-[0.99] transition-transform"
+   735→                onClick={() => { setSelectedNote(note); setCurrentView('detail') }}
+   736→              >
+   737→                <CardContent className="p-3">
+   738→                  <div className="flex items-start justify-between gap-2">
+   739→                    <div className="flex-1 min-w-0">
+   740→                      {note.title && <h3 className="font-medium text-sm truncate">{note.title}</h3>}
+   741→                      <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{getPreview(note.content)}</p>
+   742→                      <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1.5 text-[11px] text-muted-foreground">
+   743→                        {note.noteDate && <span className="flex items-center gap-0.5"><CalendarDays className="h-3 w-3" />{formatDateShort(note.noteDate)}</span>}
+   744→                        {note.axis && <span className="flex items-center gap-0.5"><GitBranch className="h-3 w-3" />Eje {note.axis}</span>}
+   745→                        {note.address && <span className="flex items-center gap-0.5"><MapPin className="h-3 w-3" />{note.address}</span>}
+   746→                        <span className="flex items-center gap-0.5"><Clock className="h-3 w-3" />{formatDate(note.createdAt)}</span>
+   747→                      </div>
+   748→                    </div>
+   749→                    <button
+   750→                      className="p-1.5 text-muted-foreground/50 hover:text-destructive shrink-0"
+   751→                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(note.id) }}
+   752→                    >
+   753→                      <Trash2 className="h-4 w-4" />
+   754→                    </button>
+   755→                  </div>
+   756→                </CardContent>
+   757→              </Card>
+   758→            ))}
+   759→          </div>
+   760→          <div className="h-4" />
+   761→        </ScrollArea>
+   762→      )}
+   763→
+   764→      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+   765→        <AlertDialogContent>
+   766→          <AlertDialogHeader>
+   767→            <AlertDialogTitle>Eliminar nota</AlertDialogTitle>
+   768→            <AlertDialogDescription>¿Estás seguro? Esta acción no se puede deshacer.</AlertDialogDescription>
+   769→          </AlertDialogHeader>
+   770→          <AlertDialogFooter>
+   771→            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+   772→            <AlertDialogAction onClick={() => deleteTarget && deleteNote(deleteTarget)} className="bg-destructive text-white hover:bg-destructive/90">Eliminar</AlertDialogAction>
+   773→          </AlertDialogFooter>
+   774→        </AlertDialogContent>
+   775→      </AlertDialog>
+   776→    </div>
+   777→  )
+   778→
+   779→  // ==================== NOTE DETAIL VIEW ====================
+   780→  const renderDetailView = () => {
+   781→    if (!selectedNote) return null
+   782→    return (
+   783→      <div className="flex flex-col h-full">
+   784→        <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
+   785→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setSelectedNote(null); setCurrentView('list') }}>
+   786→            <ArrowLeft className="h-4 w-4" />
+   787→          </Button>
+   788→          <div className="flex-1 min-w-0">
+   789→            {selectedNote.title && <h1 className="font-bold text-sm truncate">{selectedNote.title}</h1>}
+   790→            <div className="flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+   791→              {selectedNote.noteDate && <span><CalendarDays className="h-3 w-3 inline" /> {formatDateShort(selectedNote.noteDate)}</span>}
+   792→              {selectedNote.axis && <span><GitBranch className="h-3 w-3 inline" /> Eje {selectedNote.axis}</span>}
+   793→              {selectedNote.address && <span><MapPin className="h-3 w-3 inline" /> {selectedNote.address}</span>}
+   794→            </div>
+   795→          </div>
+   796→          <button className="p-1.5 text-muted-foreground hover:text-destructive" onClick={() => setDeleteTarget(selectedNote.id)}>
+   797→            <Trash2 className="h-4 w-4" />
+   798→          </button>
+   799→        </div>
+   800→
+   801→        {(selectedNote.noteDate || selectedNote.axis || selectedNote.address) && (
+   802→          <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b bg-muted/20 shrink-0">
+   803→            {selectedNote.noteDate && (
+   804→              <span className="flex items-center gap-1 px-2 py-1 bg-background rounded text-xs border">
+   805→                <CalendarDays className="h-3 w-3 text-primary" />{formatDateShort(selectedNote.noteDate)}
+   806→              </span>
+   807→            )}
+   808→            {selectedNote.axis && (
+   809→              <span className="flex items-center gap-1 px-2 py-1 bg-background rounded text-xs border">
+   810→                <GitBranch className="h-3 w-3 text-primary" />Eje {selectedNote.axis}
+   811→              </span>
+   812→            )}
+   813→            {selectedNote.address && (
+   814→              <span className="flex items-center gap-1 px-2 py-1 bg-background rounded text-xs border">
+   815→                <MapPin className="h-3 w-3 text-primary" />{selectedNote.address}
+   816→              </span>
+   817→            )}
+   818→          </div>
+   819→        )}
+   820→
+   821→        <ScrollArea className="flex-1">
+   822→          <div className="px-4 py-3 text-[15px] leading-relaxed whitespace-pre-wrap">{selectedNote.content}</div>
+   823→        </ScrollArea>
+   824→
+   825→        <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+   826→          <AlertDialogContent>
+   827→            <AlertDialogHeader>
+   828→              <AlertDialogTitle>Eliminar nota</AlertDialogTitle>
+   829→              <AlertDialogDescription>¿Estás seguro? Esta acción no se puede deshacer.</AlertDialogDescription>
+   830→            </AlertDialogHeader>
+   831→            <AlertDialogFooter>
+   832→              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+   833→              <AlertDialogAction onClick={() => deleteTarget && deleteNote(deleteTarget)} className="bg-destructive text-white hover:bg-destructive/90">Eliminar</AlertDialogAction>
+   834→            </AlertDialogFooter>
+   835→          </AlertDialogContent>
+   836→        </AlertDialog>
+   837→      </div>
+   838→    )
+   839→  }
+   840→
+   841→  return (
+   842→    <div className="h-dvh flex flex-col bg-background max-w-lg mx-auto">
+   843→      {/* Not supported banner */}
+   844→      {!isSupported && (
+   845→        <div className="shrink-0 bg-destructive/10 border-b border-destructive/20 px-4 py-2">
+   846→          <p className="text-xs text-destructive font-medium text-center">Reconocimiento de voz no disponible. Usa Chrome o Safari.</p>
+   847→        </div>
+   848→      )}
+   849→
+   850→      {/* Error banner */}
+   851→      {recognitionError && (
+   852→        <div className="shrink-0 bg-destructive/10 border-b border-destructive/20 px-4 py-2 flex items-center justify-between">
+   853→          <p className="text-xs text-destructive">{recognitionError}</p>
+   854→          <button onClick={() => setRecognitionError('')}><X className="h-3.5 w-3.5 text-destructive" /></button>
+   855→        </div>
+   856→      )}
+   857→
+   858→      {/* Main content fills the screen */}
+   859→      {currentView === 'dictation' && renderDictationView()}
+   860→      {currentView === 'list' && renderListView()}
+   861→      {currentView === 'detail' && renderDetailView()}
+   862→    </div>
+   863→  )
+   864→}

@@ -235,7 +235,28 @@ function buildReportHTML(notes: Note[]): string {
 
 function exportAsWord(notes: Note[]) {
   const html = buildReportHTML(notes)
-  const blob = new Blob(['\ufeff' + html], { type: 'application/msword' })
+  // Word XML section properties to force landscape orientation
+  const wordSection = `
+<!--[if gte mso 9]><xml>
+  <w:WordDocument>
+    <w:View>Print</w:View>
+    <w:Zoom>100</w:Zoom>
+    <w:DoNotOptimizeForBrowser/>
+  </w:WordDocument>
+</xml><![endif]-->
+<style>
+  /* Landscape for Word */
+  @page Section1 {
+    size: 29.7cm 21cm;
+    mso-page-orientation: landscape;
+    margin: 1.5cm;
+  }
+  div.Section1 { page: Section1; }
+</style>`
+  const finalHtml = html.replace('</head>', wordSection + '</head>')
+    .replace('<body>', '<body><div class="Section1">')
+    .replace('</body>', '</div></body>')
+  const blob = new Blob(['\ufeff' + finalHtml], { type: 'application/msword' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
